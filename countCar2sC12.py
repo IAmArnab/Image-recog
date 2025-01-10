@@ -1,9 +1,39 @@
+import time
+
 import cv2  # Import OpenCV for image and video processing
-import pafy
 import numpy as np  # Import NumPy for numerical operations
 import os  # Import OS module for directory handling
 from datetime import datetime  # Import datetime for time-based operations
 import logging
+from matplotlib import pyplot as plt
+# import tensorflow as tf
+
+# Recreate the exact same model, including its weights and the optimizer
+# model = tf.keras.models.load_model('model.h5')
+
+def count_patches(img):
+
+    img = cv2.normalize(src=img, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+    plt.subplot(2, 4, 1)
+    plt.imshow(img)
+    plt.axis('off')  # Hide the axis labels
+    plt.title("sheet")
+    test = img.copy()
+    # Read gray image
+    # Create default parametrization LSD
+    lsd = cv2.createLineSegmentDetector(0)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Detect lines in the image
+    lines = lsd.detect(gray)[0]  # Position 0 of the returned tuple are the detected lines
+
+    # Draw detected lines in the image
+    drawn_img = lsd.drawSegments(img, lines)
+
+    # Show image
+    # cv2.imshow("LSD", drawn_img)
+    # print(f"cont count {len(lines)}")
+    return len(lines)
 
 def concat_and_show(img_1, img_2, lbl):
     # print(img_1.shape)
@@ -15,6 +45,34 @@ def concat_and_show(img_1, img_2, lbl):
     img_3[:h2, w1:w1 + w2, :] = img_2
     return img_3
 
+def simplify_contour(contour, n_corners=4):
+    '''
+    Binary searches best `epsilon` value to force contour
+        approximation contain exactly `n_corners` points.
+
+    :param contour: OpenCV2 contour.
+    :param n_corners: Number of corners (points) the contour must contain.
+
+    :returns: Simplified contour in successful case. Otherwise returns initial contour.
+    '''
+    n_iter, max_iter = 0, 100
+    lb, ub = 0., 1.
+
+    while True:
+        n_iter += 1
+        if n_iter > max_iter:
+            return contour
+
+        k = (lb + ub) / 2.
+        eps = k * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, eps, True)
+
+        if len(approx) > n_corners:
+            lb = (lb + ub) / 2.
+        elif len(approx) < n_corners:
+            ub = (lb + ub) / 2.
+        else:
+            return approx
 
 def draw_trapzoid(frame, corners,color):
     cv2.line(frame, (corners[0][0][0],corners[0][0][1]),(corners[1][0][0],corners[1][0][1]),color,1)
@@ -23,7 +81,7 @@ def draw_trapzoid(frame, corners,color):
     cv2.line(frame, (corners[3][0][0], corners[3][0][1]), (corners[0][0][0], corners[0][0][1]), color, 1)
 
 def detect_sheets(frame):
-
+    test = frame.copy()
     frame_x, frame_y = frame.shape[:2]
     frame_area = frame_x * frame_y
     sheets = []
@@ -41,23 +99,32 @@ def detect_sheets(frame):
 
     rect_cnt = 0
     for cnt in contours:
+        cnt = simplify_contour(cnt)
         x, y, w, h = cv2.boundingRect(cnt)
         ratio = float(w) / h
-        if (ratio >0.6 and ratio < 1.4 and cv2.contourArea(cnt) > frame_area*0.03 and cv2.contourArea(cnt) < frame_area*0.15) :
+        if (len(cnt) == 4 and ratio >0.6 and ratio < 1.4 and cv2.contourArea(cnt) > frame_area*0.03 and cv2.contourArea(cnt) < frame_area*0.15) :
             rect_cnt += 1
-            print(f"Found rect #{rect_cnt} with area {cv2.contourArea(cnt)}")
-            sheets.append([x,y,w,h])
-    # cv2.imshow("Shapes", frame)
+            # print(f"Found rect #{rect_cnt} with area {cv2.contourArea(cnt)}")
+            sheets.append(cnt)
+            # cv2.drawContours(test,[cnt], -1, (0, 255, 0), 1)
+            # epsilon = 0.01 * cv2.arcLength(cnt, True)
+            # approx = cv2.approxPolyDP(cnt, epsilon, True)
+            # cv2.drawContours(test,[cnt], -1, (255, 0, 0), 1)
+            # print()
+            # cv2.imshow("Shapes", test)
+            # cv2.waitKey()
     return sheets
 
 def filter_sheets(sheets, width):
     filtered_sheets = []
     for sheet in sheets:
         #{CONFIG} Sheets having laft top corner in below window will be considered for processing
-        if (sheet[0] < width*.45 and sheet[0] > width*.4):
+        # print(sheet[0][0][0])
+        # print(width*.60)
+        if sheet[0][0][0] < width*.65 and sheet[0][0][0] > width*.60 :
             filtered_sheets.append(sheet)
-    # return sheets
-    return filtered_sheets
+    return sheets
+    # return filtered_sheets
 def pre_process(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.medianBlur(gray, 5)
@@ -65,150 +132,137 @@ def pre_process(img):
     sharpen = cv2.filter2D(blur, -1, sharpen_kernel)
     return blur
 
-# Function to compare images for similarity
-def compare_images(reference_image, current_image):
-    similarity = cv2.matchTemplate(reference_image, current_image, cv2.TM_CCOEFF_NORMED)  # Compute similarity
-    # img = concat_and_show(reference_image, current_image,"")
+# {Not in use}Function to compare images for similarity
+def compare_images(reference_image, frame, corners):
+    plt.subplot(2, 1, 1)
+    plt.imshow(reference_image)
+    plt.axis('off')  # Hide the axis labels
+    plt.title("Image 1")
+    if len(corners) != 4:
+        return -1
+    img = frame.copy()
+    ht, wd = reference_image.shape[:2]
+    # reformat input corners to x,y list
+    icorners = []
+    for corner in corners:
+        pt = [corner[0][0], corner[0][1]]
+        icorners.append(pt)
+    icorners = np.float32(icorners)
+    # get corresponding output corners form width and height
+    ocorners = [[0, 0], [0, ht], [wd, ht], [wd, 0]]
+    ocorners = np.float32(ocorners)
+
+    # get perspective tranformation matrix
+    M = cv2.getPerspectiveTransform(icorners, ocorners)
+
+    # do perspective
+    warped = cv2.warpPerspective(img, M, (wd, ht))
+    plt.subplot(2, 1, 2)
+    plt.imshow(warped)
+    plt.axis('off')  # Hide the axis labels
+    plt.title("Image 2")
+    similarity = cv2.matchTemplate(warped, reference_image, cv2.TM_CCOEFF_NORMED)  # Compute similarity
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(similarity)
+    top_left = max_loc
+    # bottom_right = (top_left[0] + w, top_left[1] + h)
+
+    # print(similarity)
+    # img = concat_and_show(reference_image, warped,"")
+    # img = np.concatenate((reference_image, warped), axis=1)
     # cv2.putText(img, f"{int(similarity.max() * 100)}", (20, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
     #                     (0, 0, 0), 1)
     # cv2.imshow("Compare",img)
+    # cv2.waitKey()
+    # plt.title(f"Similarity {int(similarity.max() * 100)}")
+    # plt.show()
+    cv2.imwrite(f"samples\\sheet_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg", warped)
     return similarity.max() * 100  # Return similarity percentage
 
-# Function to process a frame
-def process_frame(frame, frame_i, timestamp_in_mil, reference_folder, similarity_threshold, net, output_layers, classes):
-    # Detect objects using YOLO
-    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)  # Prepare image
-    net.setInput(blob)  # Set YOLO input
-    outs = net.forward(output_layers)  # Perform forward pass
+def is_good_sheet(frame, corners, tolarance_level, skip_this_frame):
+    ht, wd = [150, 130]
+    # reformat input corners to x,y list
+    icorners = []
+    for corner in corners:
+        pt = [corner[0][0], corner[0][1]]
+        icorners.append(pt)
+    icorners = np.float32(icorners)
+    # get corresponding output corners form width and height
+    ocorners = [[0, 0], [0, ht], [wd, ht], [wd, 0]]
+    ocorners = np.float32(ocorners)
 
-    boxes = []  # List to store bounding boxes
-    confidences = []  # List to store confidence scores
-    for out in outs:  # Loop over YOLO output layers
-        for detection in out:  # Loop over detections
-            scores = detection[5:]  # Extract confidence scores for classes
-            class_id = np.argmax(scores)  # Find the class with highest confidence
-            confidence = scores[class_id]  # Get the confidence value
-            if confidence > 0.5:  # Consider detections with confidence > 50%
-                center_x, center_y, w, h = (
-                            detection[:4] * [frame.shape[1], frame.shape[0], frame.shape[1], frame.shape[0]]).astype(
-                    int)
-                x = int(center_x - w / 2)  # Calculate top-left corner x-coordinate
-                y = int(center_y - h / 2)  # Calculate top-left corner y-coordinate
-                boxes.append([x, y, w, h])  # Add bounding box to the list
-                confidences.append(float(confidence))  # Add confidence to the list
+    # get perspective tranformation matrix
+    M = cv2.getPerspectiveTransform(icorners, ocorners)
 
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)  # Apply Non-Maximum Suppression
-    # detections = [boxes[i[0]] for i in indices]  # Filter detections
-    # detections = [boxes[i[0]] for i in indices] if len(indices) > 0 else []  # chnged
-
-    # If indices is not empty, extract corresponding bounding boxes
-    if len(indices) > 0:
-        # timestamps.append(cap.get(cv2.CAP_PROP_POS_MSEC))
-        # calc_timestamps.append(calc_timestamps[-1] + 1000/fps)
-        detections = [boxes[i] for i in indices.flatten()]  # Use flatten to convert it to 1D array
-        # print(detections)
-    else:
-        detections = []  # No detections if indices is empty
-
+    # do perspective
+    sheet = cv2.warpPerspective(frame, M, (wd, ht))
+    count = count_patches(sheet)
+    if (not skip_this_frame) and count > tolarance_level:
+        cv2.imwrite(f"defected_folder\\sheet_defect_count_{count}_{datetime.now().strftime('%Y%m%d%H%M%S-%f')}.jpg", sheet)
+    return count
+    # print(sheet.shape)
+    # x_val=[]
+    # x_val.append(sheet)
+    # # resized_arr = cv2.resize(sheet, (150, 130))  # Reshaping images to preferred size
+    # x_val = np.array(x_val) / 255
+    # x_val.reshape(-1, 150, 130, 1)
+    # print(x_val.shape)
+    # predictions = model.predict([x_val])
+    # return predictions[0]
+def check_for_fault(frame, frame_i, sheets, tolerance_level, skip_this_frame):
     # Process detections for defect analysis
-    for i, box in enumerate(detections):
-        x, y, w, h = box
-        cropped = frame[y:y + h, x:x + w]  # Crop the detected object
-        if cropped is None or h<0 or w<0 or x<0 or y<0:  # Skip if the image couldn't be loaded
-            continue
-        # print(box)
-        # cv2.imshow(f"Error crop", cropped)
-        is_defective = False  # Initialize defect flag
-
-        for ref_file in os.listdir(reference_folder):  # Loop through reference images
-            ref_path = os.path.join(reference_folder, ref_file)  # Get reference file path
-            reference_image = cv2.imread(ref_path)  # Read reference image
-            if reference_image is None:  # Skip if the image couldn't be loaded
-                continue
-            h1, w1 = reference_image.shape[:2]
-            if h1<=h or w1<=w : # Skip small reference image
-                continue
-            try:
-                similarity = compare_images(reference_image, cropped)  # Compare images# concatenate image Horizontally
-                print(f"Frame {frame_i}, Similarity {similarity}")
-                if similarity < similarity_threshold:  # Mark defective if similarity is below threshold
-                    is_defective = True
-                    break
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                print(f"Error caused while comparing x{x}, y{y}, w{w}, h{h}")
-                print(f"Reference Image size height:{h1} width:{w1}")
-
-        # Handle defective and non-defective images
-        if is_defective:
-            result = concat_and_show(reference_image, cropped, f"Match found {int(similarity)}%")
-            defect_path = os.path.join(defect_folder, f"defective_match_{int(similarity)}%_{datetime.now().strftime('%Y%m%d%H%M%S')}_{i}.jpg")
-            cv2.imwrite(defect_path, result)  # Save defective image
-            print(f"Defective image saved: {defect_path}")
-        else:
-            print("Non-defective image discarded.")  # Log discarded non-defective image
-
-    cv2.imshow("Processing", frame)  # Display the frame in real-time
-
-def check_for_fault(frame, frame_i, sheets, similarity_threshold, reference_folder):
-    # Process detections for defect analysis
-    org_frame = frame.copy()
+    frame_copy = frame.copy()
     sheet_i =0
     for sheet in sheets:
         sheet_i+=1
-        x, y, w, h = sheet
-        cropped = frame[y:y + h, x:x + w]  # Crop the detected object
         is_defective = False  # Initialize defect flag
 
-        for ref_file in os.listdir(reference_folder):  # Loop through reference images
-            # print(ref_file)
-            ref_path = os.path.join(reference_folder, ref_file)  # Get reference file path
-            reference_image = cv2.imread(ref_path)  # Read reference image
-            if reference_image is None:  # Skip if the image couldn't be loaded
-                continue
-            h1, w1 = reference_image.shape[:2]
-            if h1 <= h or w1 <= w:  # Skip small reference image
-                continue
-            try:
-                similarity = compare_images(reference_image, cropped)  # Compare images# concatenate image Horizontally
-                print(f"Frame {frame_i}, Similarity {similarity}")
-                if similarity < similarity_threshold:  # Mark defective if similarity is below threshold
-                    is_defective = True
-                    break
-            except Exception as e:
-                logging.error(e, exc_info=True)
-                print(f"Error caused while comparing x{x}, y{y}, w{w}, h{h}")
-                print(f"Reference Image size height:{h1} width:{w1}")
+        # similarities = []
+        # for ref_file in os.listdir(reference_folder):  # Loop through reference images
+        #     ref_path = os.path.join(reference_folder, ref_file)  # Get reference file path
+        #     reference_image = cv2.imread(ref_path)  # Read reference image
+        #     if reference_image is None:  # Skip if the image couldn't be loaded
+        #         continue
+        #     try:
+        #         similarities.append(compare_images(reference_image, frame, sheet))  # Compare images# concatenate image Horizontally
+        #
+        #     except Exception as e:
+        #         logging.error(e, exc_info=True)
+
+        result = is_good_sheet(frame, sheet, tolerance_level, skip_this_frame)
+        defect_count = result
+        if defect_count > tolerance_level:  # Mark defective if similarity is below threshold
+            is_defective = True
+        # print(f"Frame {frame_i}, Sheet {sheet_i}, Is Bad {is_defective}")
 
         # Handle defective and non-defective images
         if is_defective:
-            frame_copy = org_frame.copy()
-            cv2.putText(frame_copy, f"Bad Sheet {int(similarity)}", (sheet[0]-5, sheet[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+            cv2.putText(frame_copy, f"Bad Sheet. defect count : {int(defect_count)}", (sheet[0][0][0]-5, sheet[0][0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
                         (0, 0, 255), 1)
-            cv2.rectangle(frame_copy, (x, y), (x + w, y + h), (0, 0, 255), 1)
+            cv2.drawContours(frame_copy,[sheet], -1, (0, 0, 255), 1)
 
             # result = concat_and_show(reference_image, cropped, f"Match found {int(similarity)}%")
-            defect_path = os.path.join(defect_folder,
-                                       f"defective_match_{int(similarity)}%_{datetime.now().strftime('%Y%m%d%H%M%S')}_{frame_i}.jpg")
-            cv2.imwrite(defect_path, frame_copy)  # Save defective image
-            print(f"Defective image saved: {defect_path}")
-            cv2.putText(frame, f"Bad Sheet {int(similarity)}", (sheet[0]-5, sheet[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
-                        (0, 0, 255), 1)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 1)
-            # print(f"Found rect #{rect_cnt} with area {cv2.contourArea(cnt)}")
-        else:
-            print("Non-defective image discarded.")  # Log discarded non-defective image
-            cv2.putText(frame, f"Good Sheet {int(similarity)}", (sheet[0]-5, sheet[1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
-                        (0, 255, 0), 1)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+            # defect_path = os.path.join(defect_folder,
+            #                            f"defective_match_{int(similarity)}%_{datetime.now().strftime('%Y%m%d%H%M%S')}_{frame_i}.jpg")
+            # cv2.imwrite(defect_path, frame_copy)  # Save defective image
+            # print(f"Defective image saved: {defect_path}")
 
-        cv2.imshow("Processing",frame)
-    return frame
+        else:
+            # print("Non-defective image discarded.")  # Log discarded non-defective image
+            cv2.putText(frame_copy, f"Good Sheet. defect count : {int(defect_count)}", (sheet[0][0][0]-5, sheet[0][0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                        (0, 255, 0), 1)
+            cv2.drawContours(frame_copy, [sheet], -1, (0, 255, 0), 1)
+        cv2.imshow("Processing",frame_copy)
+        # time.sleep(.1)
+    return frame_copy
 # Function to process IP camera stream for object detection and defect analysis
 
-def process_ip_camera(ip_camera_url, reference_folder, defect_folder, similarity_threshold=55):
+def process_ip_camera(ip_camera_url, manual_capture_folder, defect_folder, output_video_folder, tolerance_level=10, skip_frames=0):
     if not os.path.exists(defect_folder):  # Ensure defect folder exists
         os.makedirs(defect_folder)
+    if not os.path.exists(output_video_folder):  # Ensure defect folder exists
+        os.makedirs(output_video_folder)
+    if not os.path.exists(manual_capture_folder):  # Ensure defect folder exists
+        os.makedirs(manual_capture_folder)
 
     cap = cv2.VideoCapture(ip_camera_url)  # Open the IP camera stream
     if not cap.isOpened():  # Check if the stream is accessible
@@ -224,16 +278,14 @@ def process_ip_camera(ip_camera_url, reference_folder, defect_folder, similarity
     # Below VideoWriter object will create
     # a frame of above defined The output
     # is stored in 'filename.avi' file.
-    result = cv2.VideoWriter(f"result_{datetime.now().strftime('%Y%m%d%H%M%S')}.avi",
+    defect_path = os.path.join(output_video_folder,f"result_{datetime.now().strftime('%Y%m%d%H%M%S')}.avi")
+    result = cv2.VideoWriter(defect_path,
                          cv2.VideoWriter_fourcc(*'MJPG'),
                          10, size)
     frame_i = 0
     while (cap.isOpened()):
+        skip_this_frame = False;
         frame_i +=1
-        # if frame_i > 300:
-        #     continue
-        # if frame_i > 310:
-        #     break
         if not cap.isOpened():  # Check if the stream is accessible
             print("Error: Unable to access IP camera stream.")
             return
@@ -241,12 +293,25 @@ def process_ip_camera(ip_camera_url, reference_folder, defect_folder, similarity
         if not ret:  # Break the loop if no frame is received
             print("Stream ended or interrupted.")
             break
+
+        # Skip few frames
+        if frame_i % skip_frames != 0:
+            skip_this_frame = True
+        # if frame_i > 57:
+        #     break
         sheets = detect_sheets(frame)
         filtered_sheets = filter_sheets(sheets, frame.shape[:2][1])
-        result_frame = check_for_fault(frame, frame_i, filtered_sheets, similarity_threshold, reference_folder)
+        result_frame = check_for_fault(frame, frame_i, filtered_sheets, tolerance_level, skip_this_frame)
         result.write(result_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):  # Quit if 'q' is pressed
+        key_pressed = cv2.waitKey(1) & 0xFF
+        if key_pressed == ord('q'):  # Quit if 'q' is pressed
             break
+        elif key_pressed == ord(' '):
+            print("space bar pressed")  # Save a snap if space bar is pressed
+            manual_capture_path = os.path.join(manual_capture_folder, f"snap_{datetime.now().strftime('%Y%m%d%H%M%S-%f')}.jpg")
+            cv2.imwrite(manual_capture_path, frame)
+            print(f"Saved manual capture {manual_capture_path}")
+
 
     # When everything done, release
     # the video capture and video
@@ -262,6 +327,10 @@ if __name__ == "__main__":
     # ip_camera_url = 'rtsp://admin:Mztpl123@192.168.1.108:80/cam/realmonitor?channel=1&subtype=0'
     ip_camera_url = 'C:\\Users\\61098198\\Downloads\\videoplayback.mp4'
 
-    reference_folder = "reference_folder"  # Path to reference images folder
+    # reference_folder = "reference_folder"  # Path to reference images folder
     defect_folder = "defected_folder"  # Path to save defective images
-    process_ip_camera(ip_camera_url, reference_folder, defect_folder)  # Start processing the IP camera stream
+    output_video_folder = "output_video_folder" # Path to save output video recording
+    manual_capture_folder = "manual_capture_folder" # Path to save manual capture
+    tolerance_level = 10
+    skip_frames = 80
+    process_ip_camera(ip_camera_url, manual_capture_folder, defect_folder, output_video_folder,tolerance_level, skip_frames)  # Start processing the IP camera stream
