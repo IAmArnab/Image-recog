@@ -251,7 +251,8 @@ def check_for_fault(frame, frame_i, sheets, tolerance_level, skip_this_frame):
             cv2.putText(frame_copy, f"Good Sheet. defect count : {int(defect_count)}", (sheet[0][0][0]-5, sheet[0][0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.3,
                         (0, 255, 0), 1)
             cv2.drawContours(frame_copy, [sheet], -1, (0, 255, 0), 1)
-        cv2.imshow("Processing",frame_copy)
+        bigger = cv2.resize(frame_copy, (1280, 720))
+        cv2.imshow("Processing",bigger)
         # time.sleep(.1)
     return frame_copy
 # Function to process IP camera stream for object detection and defect analysis
